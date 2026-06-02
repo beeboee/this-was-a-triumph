@@ -1,0 +1,25 @@
+download:
+  name: Download voice lines
+  description: Download Portal 2 GLaDOS voice lines from Portal Wiki and rebuild the local quote index.
+  fields:
+    overwrite:
+      name: Overwrite existing audio files
+      description: Re-download audio files that already exist in /config/www/glados_voice/audio.
+      required: false
+      default: false
+      selector:
+        boolean:
+    concurrency:
+      name: Download concurrency
+      description: Number of audio files to download in parallel. Keep this low to be polite to Portal Wiki.
+      required: false
+      default: 4
+      selector:
+        number:
+          min: 1
+          max: 8
+          mode: box
+
+rebuild_index:
+  name: Rebuild index
+  description: Reload the existing generated index. This is mostly a sanity-check service.
