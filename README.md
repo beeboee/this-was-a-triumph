@@ -1,12 +1,15 @@
 # GLaDOS Voice Lines for Home Assistant
 
-A HACS-compatible custom integration that downloads GLaDOS Portal 2 voice lines from Portal Wiki, saves the `.wav` files locally, builds a quote index, and provides a compact Lovelace card that plays a random line in the browser.
+A HACS-compatible custom integration that downloads GLaDOS voice lines from **Portal** and **Portal 2**, saves the audio locally, builds a quote index, and provides a compact Lovelace card that plays random lines in the browser.
 
-This repo does **not** include Portal, Portal 2, Valve, GLaDOS audio, or quote data. Your Home Assistant instance fetches the publicly linked files from Portal Wiki after you install and configure the integration.
+This repo does **not** include Portal, Portal 2, Valve, GLaDOS audio, lyrics, or quote data. Your Home Assistant instance fetches the publicly linked files after you install and configure the integration.
 
 ## What it does
 
-- Downloads GLaDOS Portal 2 `.wav` files from Portal Wiki.
+- Downloads GLaDOS `.wav` voice lines from Portal Wiki for:
+  - Portal
+  - Portal 2
+- Tries to download the Portal 2 ending song, **Want You Gone**, from Valve's freely released Portal 2 soundtrack ZIP.
 - Saves audio to:
 
   ```text
@@ -31,18 +34,23 @@ This repo does **not** include Portal, Portal 2, Valve, GLaDOS audio, or quote d
   /glados_voice/card.js
   ```
 
-- The card:
-  - chooses a random line when loaded,
-  - tries to play it immediately,
-  - has a left-side shuffle button,
-  - shows the full quote on the right,
-  - replays the current line when the quote is tapped.
+## Card behavior
+
+- Reloading the dashboard picks a random normal GLaDOS line from the combined Portal + Portal 2 pool.
+- The shuffle button also picks a random normal line from the combined pool.
+- Random really means random: it can repeat the same line immediately.
+- Portal 1 and Portal 2 lines are mixed together. It does not play through one game before the other.
+- The card tracks which normal voice lines this browser has successfully started playing.
+- After every normal voice line has been heard at least once, the card plays **Want You Gone**, then resets that browser's heard-line tracker.
+- Tapping the transcript:
+  - pauses if the current line/song is still playing,
+  - resumes if it is paused,
+  - replays if it already finished.
+- This plays through the device running the Home Assistant UI, not through a Home Assistant `media_player` entity.
 
 ## Important browser limitation
 
-Browsers often block audio autoplay until the page has been tapped/clicked. The card still picks a random line on reload. If autoplay is blocked, tap the quote once and future playback in that session should behave normally.
-
-This plays through the device running the Home Assistant UI, not through a Home Assistant media player entity.
+Browsers often block audio autoplay until the page has been tapped/clicked. The card still picks a random line on reload. If autoplay is blocked, tap the transcript once and future playback in that browser session should behave normally.
 
 ## Install through HACS as a custom repository
 
@@ -56,7 +64,7 @@ This plays through the device running the Home Assistant UI, not through a Home 
 8. Go to **Settings → Devices & services → Add integration**.
 9. Search for **GLaDOS Voice Lines** and add it.
 
-After setup, the first download starts automatically if `/config/www/glados_voice/index.json` does not exist.
+After setup, the first download starts automatically if `/config/www/glados_voice/index.json` does not exist or if the existing index is from the older Portal-2-only version.
 
 ## Manual install
 
@@ -96,9 +104,19 @@ type: custom:glados-voice-card
 index_url: /local/glados_voice/index.json
 autoplay: true
 show_context: true
+show_progress: true
 ```
 
-The visual layout is intentionally close to what you described: left `1/7` shuffle button, right `6/7` full quote. Tapping the quote replays the current line.
+The visual layout stays close to the original request: left `1/7` shuffle button, right `6/7` transcript. Tapping the transcript pauses/resumes/replays.
+
+Optional settings:
+
+```yaml
+volume: 0.8
+show_progress: false
+progress_storage_key: glados_voice_heard_v2
+cache_bust: true
+```
 
 ## Service
 
@@ -111,7 +129,7 @@ data:
   concurrency: 4
 ```
 
-Set `overwrite: true` to re-download existing `.wav` files.
+Set `overwrite: true` to re-download existing audio files.
 
 ## Files exposed to the browser
 
@@ -125,5 +143,6 @@ Because files are saved under `/config/www`, Home Assistant exposes them under `
 ## Notes
 
 - Keep download concurrency low. The default is `4`.
-- If Portal Wiki changes its page structure, the parser may need adjustment.
+- If Portal Wiki or Valve's soundtrack page changes its page structure, the parser/downloader may need adjustment.
+- The completion tracker is browser-local. Your desktop, phone, and tablet each track heard lines separately.
 - This is a local browser audio card. It does not call `media_player.play_media`.
