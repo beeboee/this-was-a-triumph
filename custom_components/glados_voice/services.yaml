@@ -1,6 +1,6 @@
 download:
   name: Download voice lines
-  description: Download Portal 2 GLaDOS voice lines from Portal Wiki and rebuild the local quote index.
+  description: Download Portal and Portal 2 GLaDOS voice lines, plus the Portal 2 ending song when available, and rebuild the local quote index.
   fields:
     overwrite:
       name: Overwrite existing audio files
@@ -11,7 +11,7 @@ download:
         boolean:
     concurrency:
       name: Download concurrency
-      description: Number of audio files to download in parallel. Keep this low to be polite to Portal Wiki.
+      description: Number of audio files to download in parallel. Keep this low to be polite to Portal Wiki and Valve's soundtrack host.
       required: false
       default: 4
       selector:
