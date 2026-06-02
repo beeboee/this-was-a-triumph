@@ -5,7 +5,8 @@ class GladosVoiceCard extends HTMLElement {
     this._config = {};
     this._items = [];
     this._lineItems = [];
-    this._endSong = null;
+    this._linesByGame = new Map();
+    this._completionSongs = {};
     this._current = null;
     this._loaded = false;
     this._loading = false;
@@ -14,10 +15,10 @@ class GladosVoiceCard extends HTMLElement {
     this._audio = null;
     this._isPlaying = false;
     this._isFinished = false;
-    this._heard = new Set();
-    this._completionSongQueued = false;
+    this._heardByGame = {};
+    this._queuedCompletionGame = null;
     this._completionSongPlaying = false;
-    this._storageKey = "glados_voice_heard_v2";
+    this._storageKey = "glados_voice_heard_v3";
   }
 
   setConfig(config) {
@@ -26,10 +27,10 @@ class GladosVoiceCard extends HTMLElement {
       autoplay: true,
       show_context: true,
       show_progress: true,
-      progress_storage_key: "glados_voice_heard_v2",
+      progress_storage_key: "glados_voice_heard_v3",
       ...config,
     };
-    this._storageKey = this._config.progress_storage_key || "glados_voice_heard_v2";
+    this._storageKey = this._config.progress_storage_key || "glados_voice_heard_v3";
     this._loadIndex();
   }
 
@@ -61,8 +62,12 @@ class GladosVoiceCard extends HTMLElement {
       const data = await response.json();
       this._items = Array.isArray(data.items) ? data.items : [];
       this._lineItems = this._items.filter((item) => (item.kind || "line") === "line");
-      this._endSong = data.end_song || this._items.find((item) => item.kind === "song") || null;
+      this._completionSongs = data.completion_songs || {};
+      if (!Object.keys(this._completionSongs).length && data.end_song) {
+        this._completionSongs = { [data.end_song.game || "Portal 2"]: data.end_song };
+      }
       if (!this._lineItems.length) throw new Error("No voice lines were found in the index.");
+      this._buildLineGroups();
       this._loadProgress();
       this._loaded = true;
       this._render();
@@ -79,25 +84,61 @@ class GladosVoiceCard extends HTMLElement {
     }
   }
 
+  _buildLineGroups() {
+    this._linesByGame = new Map();
+    for (const item of this._lineItems) {
+      const game = item.game || "Unknown";
+      if (!this._linesByGame.has(game)) this._linesByGame.set(game, []);
+      this._linesByGame.get(game).push(item);
+    }
+  }
+
   _loadProgress() {
-    const validIds = new Set(this._lineItems.map((item) => item.id));
+    const validByGame = {};
+    for (const [game, lines] of this._linesByGame.entries()) {
+      validByGame[game] = new Set(lines.map((item) => item.id));
+    }
+
+    const nextProgress = {};
+    for (const game of Object.keys(validByGame)) {
+      nextProgress[game] = new Set();
+    }
+
     try {
       const raw = window.localStorage.getItem(this._storageKey);
       const parsed = raw ? JSON.parse(raw) : {};
-      const ids = Array.isArray(parsed.ids) ? parsed.ids : [];
-      this._heard = new Set(ids.filter((id) => validIds.has(id)));
+
+      if (parsed.by_game && typeof parsed.by_game === "object") {
+        for (const [game, ids] of Object.entries(parsed.by_game)) {
+          if (!validByGame[game] || !Array.isArray(ids)) continue;
+          nextProgress[game] = new Set(ids.filter((id) => validByGame[game].has(id)));
+        }
+      } else if (Array.isArray(parsed.ids)) {
+        // Graceful migration from v2 combined progress.
+        for (const id of parsed.ids) {
+          for (const [game, validIds] of Object.entries(validByGame)) {
+            if (validIds.has(id)) nextProgress[game].add(id);
+          }
+        }
+      }
     } catch (_) {
-      this._heard = new Set();
+      // Ignore corrupt/unavailable localStorage and start clean.
     }
+
+    this._heardByGame = nextProgress;
     this._saveProgress();
   }
 
   _saveProgress() {
     try {
+      const byGame = {};
+      for (const [game, ids] of Object.entries(this._heardByGame)) {
+        byGame[game] = [...ids];
+      }
       window.localStorage.setItem(
         this._storageKey,
         JSON.stringify({
-          ids: [...this._heard],
+          by_game: byGame,
           updated_at: new Date().toISOString(),
         }),
       );
@@ -106,31 +147,49 @@ class GladosVoiceCard extends HTMLElement {
     }
   }
 
-  _resetProgress() {
-    this._heard = new Set();
-    this._completionSongQueued = false;
+  _resetProgress(game = null) {
+    if (game) {
+      this._heardByGame[game] = new Set();
+    } else {
+      const reset = {};
+      for (const gameName of this._linesByGame.keys()) {
+        reset[gameName] = new Set();
+      }
+      this._heardByGame = reset;
+    }
+    this._queuedCompletionGame = null;
     this._completionSongPlaying = false;
     this._saveProgress();
   }
 
   _markHeard(item) {
     if (!item || (item.kind || "line") !== "line") return;
-    if (!this._heard.has(item.id)) {
-      this._heard.add(item.id);
+    const game = item.game || "Unknown";
+    if (!this._heardByGame[game]) this._heardByGame[game] = new Set();
+
+    const wasComplete = this._isGameComplete(game);
+    if (!this._heardByGame[game].has(item.id)) {
+      this._heardByGame[game].add(item.id);
       this._saveProgress();
     }
-    if (this._lineItems.length && this._heard.size >= this._lineItems.length) {
-      this._completionSongQueued = true;
+
+    if (!wasComplete && this._isGameComplete(game)) {
+      this._queuedCompletionGame = game;
     }
+  }
+
+  _isGameComplete(game) {
+    const total = this._linesByGame.get(game)?.length || 0;
+    if (!total) return false;
+    return (this._heardByGame[game]?.size || 0) >= total;
   }
 
   _pickRandom(play = true) {
     if (!this._lineItems.length) return;
 
-    // If the completion song was reached and the user manually shuffles away from it,
-    // count that cycle as done so they do not get trapped in completion-song limbo.
-    if (this._completionSongPlaying || this._current?.kind === "song") {
-      this._resetProgress();
+    // If the user shuffles away from a completion song, count that game's cycle as done.
+    if ((this._completionSongPlaying || this._current?.kind === "song") && this._current?.game) {
+      this._resetProgress(this._current.game);
     }
 
     const next = this._lineItems[Math.floor(Math.random() * this._lineItems.length)];
@@ -220,28 +279,30 @@ class GladosVoiceCard extends HTMLElement {
     this._isFinished = true;
     this._render();
 
-    if ((item.kind || "line") === "line" && this._completionSongQueued) {
-      if (this._endSong?.audio) {
-        window.setTimeout(() => this._playEndSong(), 350);
+    if ((item.kind || "line") === "line" && this._queuedCompletionGame === item.game) {
+      const song = this._completionSongs[item.game];
+      if (song?.audio) {
+        window.setTimeout(() => this._playCompletionSong(item.game), 350);
       } else {
-        this._resetProgress();
+        this._resetProgress(item.game);
         this._render();
       }
       return;
     }
 
     if (item.kind === "song") {
-      this._resetProgress();
+      this._resetProgress(item.game);
       this._isFinished = true;
       this._render();
     }
   }
 
-  _playEndSong() {
-    if (!this._endSong?.audio) return;
-    this._completionSongQueued = false;
+  _playCompletionSong(game) {
+    const song = this._completionSongs[game];
+    if (!song?.audio) return;
+    this._queuedCompletionGame = null;
     this._completionSongPlaying = true;
-    this._current = this._endSong;
+    this._current = song;
     this._blocked = false;
     this._isFinished = false;
     this._render();
@@ -256,7 +317,12 @@ class GladosVoiceCard extends HTMLElement {
 
   _progressText() {
     if (this._config.show_progress === false || !this._lineItems.length) return "";
-    return `${this._heard.size}/${this._lineItems.length} heard`;
+    const bits = [];
+    for (const [game, lines] of this._linesByGame.entries()) {
+      const label = game === "Portal" ? "P1" : game === "Portal 2" ? "P2" : game;
+      bits.push(`${label} ${this._heardByGame[game]?.size || 0}/${lines.length}`);
+    }
+    return bits.join(" · ");
   }
 
   _statusText() {
