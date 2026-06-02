@@ -15,7 +15,12 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
 
 from .const import DOMAIN, NAME, SERVICE_DOWNLOAD, SERVICE_REBUILD_INDEX, WEB_PATH_CARD
-from .downloader import download_all_voice_lines, get_index_path, get_storage_dir, rebuild_index_from_existing_files
+from .downloader import (
+    download_all_voice_lines,
+    get_storage_dir,
+    index_needs_refresh,
+    rebuild_index_from_existing_files,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -45,8 +50,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await _async_register_static_paths(hass)
     _async_register_services(hass)
 
-    index_path = get_index_path(hass)
-    if not index_path.exists():
+    if await hass.async_add_executor_job(index_needs_refresh, hass):
         hass.async_create_task(_download_with_notification(hass, overwrite=False, concurrency=4))
     return True
 
@@ -89,7 +93,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
         result = await hass.async_add_executor_job(rebuild_index_from_existing_files, hass)
         persistent_notification.async_create(
             hass,
-            f"Loaded existing GLaDOS index with {result.get('count', 0)} voice lines.",
+            f"Loaded existing GLaDOS index with {result.get('line_count', result.get('count', 0))} voice lines.",
             title=NAME,
             notification_id="glados_voice_rebuild_done",
         )
@@ -103,7 +107,7 @@ async def _download_with_notification(hass: HomeAssistant, *, overwrite: bool, c
     """Download and notify."""
     persistent_notification.async_create(
         hass,
-        "Downloading GLaDOS Portal 2 voice lines from Portal Wiki. This can take a bit on the first run.",
+        "Downloading GLaDOS voice lines from Portal and Portal 2, plus the Portal 2 ending song when available.",
         title=NAME,
         notification_id="glados_voice_download_started",
     )
@@ -120,12 +124,14 @@ async def _download_with_notification(hass: HomeAssistant, *, overwrite: bool, c
         return
 
     failed_count = len(result.get("failed", []))
+    end_song_status = " Ending song ready." if result.get("end_song") else " Ending song was not downloaded."
     message = (
-        f"Ready: {result.get('count', 0)} voice lines indexed. "
+        f"Ready: {result.get('line_count', result.get('count', 0))} voice lines indexed. "
         f"Downloaded {result.get('downloaded', 0)}, skipped {result.get('skipped', 0)}."
+        f"{end_song_status}"
     )
     if failed_count:
-        message += f" {failed_count} files failed; check Home Assistant logs."
+        message += f" {failed_count} downloads/pages failed; check Home Assistant logs."
 
     persistent_notification.async_create(
         hass,
