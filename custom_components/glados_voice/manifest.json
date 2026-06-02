@@ -1,0 +1,13 @@
+{
+  "domain": "glados_voice",
+  "name": "GLaDOS Voice Lines",
+  "after_dependencies": ["frontend"],
+  "codeowners": ["@beeboee"],
+  "config_flow": true,
+  "dependencies": ["http", "persistent_notification"],
+  "documentation": "https://github.com/beeboee/this-was-a-triumph",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/beeboee/this-was-a-triumph/issues",
+  "requirements": ["beautifulsoup4==4.13.4"],
+  "version": "0.1.0"
+}
