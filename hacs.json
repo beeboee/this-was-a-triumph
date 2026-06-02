@@ -1,0 +1,6 @@
+{
+  "name": "GLaDOS Voice Lines",
+  "render_readme": true,
+  "domains": ["glados_voice"],
+  "homeassistant": "2025.7.0"
+}
