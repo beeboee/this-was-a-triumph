@@ -9,7 +9,9 @@ This repo does **not** include Portal, Portal 2, Valve, GLaDOS audio, lyrics, or
 - Downloads GLaDOS `.wav` voice lines from Portal Wiki for:
   - Portal
   - Portal 2
-- Tries to download the Portal 2 ending song, **Want You Gone**, from Valve's freely released Portal 2 soundtrack ZIP.
+- Tries to download per-game completion songs:
+  - Portal: **Still Alive**
+  - Portal 2: **Want You Gone**
 - Saves audio to:
 
   ```text
@@ -40,8 +42,9 @@ This repo does **not** include Portal, Portal 2, Valve, GLaDOS audio, lyrics, or
 - The shuffle button also picks a random normal line from the combined pool.
 - Random really means random: it can repeat the same line immediately.
 - Portal 1 and Portal 2 lines are mixed together. It does not play through one game before the other.
-- The card tracks which normal voice lines this browser has successfully started playing.
-- After every normal voice line has been heard at least once, the card plays **Want You Gone**, then resets that browser's heard-line tracker.
+- The card tracks which normal voice lines this browser has successfully started playing, separately for Portal and Portal 2.
+- After every normal Portal line has been heard at least once, the card plays **Still Alive**, then resets Portal's heard-line tracker.
+- After every normal Portal 2 line has been heard at least once, the card plays **Want You Gone**, then resets Portal 2's heard-line tracker.
 - Tapping the transcript:
   - pauses if the current line/song is still playing,
   - resumes if it is paused,
@@ -64,7 +67,7 @@ Browsers often block audio autoplay until the page has been tapped/clicked. The 
 8. Go to **Settings → Devices & services → Add integration**.
 9. Search for **GLaDOS Voice Lines** and add it.
 
-After setup, the first download starts automatically if `/config/www/glados_voice/index.json` does not exist or if the existing index is from the older Portal-2-only version.
+After setup, the first download starts automatically if `/config/www/glados_voice/index.json` does not exist or if the existing index is from an older schema.
 
 ## Manual install
 
@@ -114,7 +117,7 @@ Optional settings:
 ```yaml
 volume: 0.8
 show_progress: false
-progress_storage_key: glados_voice_heard_v2
+progress_storage_key: glados_voice_heard_v3
 cache_bust: true
 ```
 
@@ -143,6 +146,6 @@ Because files are saved under `/config/www`, Home Assistant exposes them under `
 ## Notes
 
 - Keep download concurrency low. The default is `4`.
-- If Portal Wiki or Valve's soundtrack page changes its page structure, the parser/downloader may need adjustment.
+- Completion song download is best-effort. If the public source page changes or does not expose a matching audio file, the matching game still works; it just resets that game's tracker without playing the song.
 - The completion tracker is browser-local. Your desktop, phone, and tablet each track heard lines separately.
 - This is a local browser audio card. It does not call `media_player.play_media`.
