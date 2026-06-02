@@ -1,0 +1,13 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "GLaDOS Voice Lines",
+        "description": "Set up the local GLaDOS voice-line downloader and dashboard card. Audio downloads start after setup if no local index exists."
+      }
+    },
+    "abort": {
+      "already_configured": "GLaDOS Voice Lines is already configured."
+    }
+  }
+}
