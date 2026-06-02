@@ -25,7 +25,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
     AUDIO_DIRNAME,
-    END_SONG,
+    COMPLETION_SONGS,
     INDEX_FILENAME,
     INDEX_VERSION,
     LOCAL_WEB_DIR,
@@ -36,7 +36,7 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-MEDIA_RE = re.compile(r"\.(?:wav|mp3|ogg)(?:$|[?#])", re.IGNORECASE)
+MEDIA_RE = re.compile(r"\.(?:wav|mp3|ogg|flac)(?:$|[?#])", re.IGNORECASE)
 WAV_RE = re.compile(r"\.wav(?:$|[?#])", re.IGNORECASE)
 ZIP_RE = re.compile(r"\.zip(?:$|[?#])", re.IGNORECASE)
 SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -84,8 +84,9 @@ def index_needs_refresh(hass: HomeAssistant) -> bool:
         return True
 
     games = {item.get("game") for item in payload.get("items", [])}
-    has_end_song = bool(payload.get("end_song"))
-    return not {"Portal", "Portal 2"}.issubset(games) or not has_end_song
+    song_games = set((payload.get("completion_songs") or {}).keys())
+    expected_games = {str(source["game"]) for source in SOURCE_PAGES}
+    return not expected_games.issubset(games) or not expected_games.issubset(song_games)
 
 
 def _clean_heading(tag: Any) -> str:
@@ -114,12 +115,27 @@ def _safe_filename(name: str, fallback: str) -> str:
     return cleaned or fallback
 
 
+def _slug(value: str) -> str:
+    """Return a filesystem-ish slug."""
+    return re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_") or "item"
+
+
 def _make_id(kind: str, game: str, source_url: str, quote: str) -> str:
     """Return a short stable id."""
     digest = hashlib.sha1(f"{kind}|{game}|{source_url}|{quote}".encode("utf-8")).hexdigest()[:10]
     base = Path(urlparse(source_url).path).stem.lower()
     base = re.sub(r"[^a-z0-9]+", "_", base).strip("_")
     return f"{base}_{digest}" if base else digest
+
+
+def _hint_match(name: str, hints: Iterable[str]) -> bool:
+    """Return true when a filename/link text appears to match song hints."""
+    normalized_name = re.sub(r"[^a-z0-9]+", "", name.lower())
+    for hint in hints:
+        normalized_hint = re.sub(r"[^a-z0-9]+", "", str(hint).lower())
+        if normalized_hint and normalized_hint in normalized_name:
+            return True
+    return False
 
 
 def parse_voice_lines(html: str, *, page_url: str, game: str) -> list[dict[str, str]]:
@@ -207,13 +223,13 @@ def _write_json(path: Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _quotes_text(lines: Iterable[MediaItem], end_song: MediaItem | None) -> str:
+def _quotes_text(lines: Iterable[MediaItem], completion_songs: dict[str, MediaItem]) -> str:
     """Return a human-readable quote index."""
     rows = [
         "# GLaDOS Portal voice lines",
         "# Sources:",
         *[f"# - {source['game']}: {source['url']}" for source in SOURCE_PAGES],
-        f"# - End song: {END_SONG['title']}",
+        *[f"# - {song['game']} completion song: {song['title']}" for song in COMPLETION_SONGS],
         "# Format: game | chapter > section | local file | transcript/title",
         "",
     ]
@@ -221,14 +237,10 @@ def _quotes_text(lines: Iterable[MediaItem], end_song: MediaItem | None) -> str:
         heading = " > ".join(part for part in (line.chapter, line.section) if part)
         rows.append(f"{line.game} | {heading} | {line.file} | {line.quote}")
 
-    if end_song is not None:
-        rows.extend(
-            [
-                "",
-                "# Completion song",
-                f"{end_song.game} | end credits | {end_song.file} | {end_song.title}",
-            ]
-        )
+    if completion_songs:
+        rows.extend(["", "# Completion songs"])
+        for song in completion_songs.values():
+            rows.append(f"{song.game} | end credits | {song.file} | {song.title}")
 
     rows.append("")
     return "\n".join(rows)
@@ -246,26 +258,35 @@ async def _fetch_bytes(session: aiohttp.ClientSession, url: str) -> bytes:
         return await response.read()
 
 
-def _discover_zip_urls(html: str, base_url: str) -> list[str]:
-    """Find soundtrack zip links on an HTML page."""
+def _discover_song_urls(html: str, base_url: str, song: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """Find direct media and soundtrack zip links on an HTML page."""
     soup = BeautifulSoup(html, "html.parser")
-    found: list[str] = []
+    direct_urls: list[str] = []
+    zip_urls: list[str] = []
+    hints = song.get("filename_hints", [])
+
     for link in soup.find_all("a", href=True):
         href = str(link["href"])
-        if not ZIP_RE.search(href):
-            continue
+        text = link.get_text(" ", strip=True)
         url = urljoin(base_url, href)
-        if url not in found:
-            found.append(url)
-    return found
+        candidate_name = f"{href} {text}"
+
+        if ZIP_RE.search(href):
+            if url not in zip_urls:
+                zip_urls.append(url)
+            continue
+
+        if MEDIA_RE.search(href) and _hint_match(candidate_name, hints):
+            if url not in direct_urls:
+                direct_urls.append(url)
+
+    return direct_urls, zip_urls
 
 
-def _select_end_song_from_zip(data: bytes, hints: Iterable[str]) -> tuple[str, bytes]:
-    """Extract the Want You Gone track from a soundtrack zip."""
-    normalized_hints = [
-        re.sub(r"[^a-z0-9]+", "", hint.lower())
-        for hint in hints
-    ]
+def _select_song_from_zip(data: bytes, song: dict[str, Any]) -> tuple[str, bytes]:
+    """Extract a completion song from a soundtrack zip."""
+    hints = song.get("filename_hints", [])
+    title = str(song["title"])
 
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         for info in archive.infolist():
@@ -275,88 +296,125 @@ def _select_end_song_from_zip(data: bytes, hints: Iterable[str]) -> tuple[str, b
             lower = filename.lower()
             if not lower.endswith(MEDIA_EXTENSIONS):
                 continue
-            normalized_name = re.sub(r"[^a-z0-9]+", "", lower)
-            if any(hint and hint in normalized_name for hint in normalized_hints):
+            if _hint_match(filename, hints):
                 return filename, archive.read(info)
 
-    raise FileNotFoundError(f"Could not find {END_SONG['title']} in soundtrack zip")
+    raise FileNotFoundError(f"Could not find {title} in soundtrack zip")
 
 
-async def _download_end_song(
+def _media_item_for_existing_song(song: dict[str, Any], rel_file: str) -> MediaItem:
+    """Return a MediaItem for a previously downloaded song."""
+    title = str(song["title"])
+    game = str(song["game"])
+    source_url = f"local:completion_song:{_slug(game)}:{_slug(title)}"
+    return MediaItem(
+        id=_make_id("song", game, source_url, title),
+        kind="song",
+        game=game,
+        quote=title,
+        title=title,
+        chapter="End credits",
+        section="",
+        source_url=source_url,
+        file=rel_file,
+        audio=f"/local/{LOCAL_WEB_DIR}/{rel_file}",
+    )
+
+
+async def _download_completion_song(
     hass: HomeAssistant,
     session: aiohttp.ClientSession,
     *,
     storage_dir: Path,
+    song: dict[str, Any],
     overwrite: bool,
 ) -> tuple[MediaItem | None, int, int, list[dict[str, str]]]:
-    """Download the Portal 2 end song from the official soundtrack zip when possible."""
+    """Download one completion song when possible."""
     failed: list[dict[str, str]] = []
-    title = str(END_SONG["title"])
-    rel_file = f"{AUDIO_DIRNAME}/portal_2_end_song_want_you_gone.mp3"
-    target = storage_dir / rel_file
+    title = str(song["title"])
+    game = str(song["game"])
+    base_name = f"{_slug(game)}_completion_song_{_slug(title)}"
 
-    if target.exists() and not overwrite:
-        return (
-            MediaItem(
-                id=_make_id("song", "Portal 2", "local:end_song:want_you_gone", title),
-                kind="song",
-                game="Portal 2",
-                quote=title,
-                title=title,
-                chapter="End credits",
-                section="",
-                source_url="local:end_song:want_you_gone",
-                file=rel_file,
-                audio=f"/local/{LOCAL_WEB_DIR}/{rel_file}",
-            ),
-            0,
-            1,
-            failed,
-        )
+    existing_matches = sorted((storage_dir / AUDIO_DIRNAME).glob(f"{base_name}.*"))
+    if existing_matches and not overwrite:
+        rel_file = f"{AUDIO_DIRNAME}/{existing_matches[0].name}"
+        return _media_item_for_existing_song(song, rel_file), 0, 1, failed
 
-    zip_urls: list[str] = []
-    try:
-        soundtrack_html = await _fetch_text(session, str(END_SONG["page_url"]))
-        zip_urls.extend(await hass.async_add_executor_job(_discover_zip_urls, soundtrack_html, str(END_SONG["page_url"])))
-    except Exception as err:  # noqa: BLE001 - fall back to explicit candidates.
-        failed.append({"url": str(END_SONG["page_url"]), "error": str(err)})
+    direct_urls: list[str] = [str(url) for url in song.get("direct_url_candidates", [])]
+    zip_urls: list[str] = [str(url) for url in song.get("zip_url_candidates", [])]
 
-    for candidate in END_SONG.get("zip_url_candidates", []):
-        if candidate not in zip_urls:
-            zip_urls.append(str(candidate))
-
-    for zip_url in zip_urls:
+    for page_url in song.get("page_urls", []):
         try:
-            archive_data = await _fetch_bytes(session, zip_url)
-            source_name, song_data = await hass.async_add_executor_job(
-                _select_end_song_from_zip,
-                archive_data,
-                END_SONG.get("filename_hints", []),
+            page_html = await _fetch_text(session, str(page_url))
+            discovered_direct, discovered_zips = await hass.async_add_executor_job(
+                _discover_song_urls,
+                page_html,
+                str(page_url),
+                song,
             )
-            extension = Path(source_name).suffix.lower() or ".mp3"
-            final_rel_file = f"{AUDIO_DIRNAME}/{_safe_filename('portal_2_end_song_want_you_gone' + extension, rel_file)}"
-            final_target = storage_dir / final_rel_file
-            await hass.async_add_executor_job(_write_bytes, final_target, song_data)
-            source_url = f"{zip_url}#{source_name}"
+            for url in discovered_direct:
+                if url not in direct_urls:
+                    direct_urls.append(url)
+            for url in discovered_zips:
+                if url not in zip_urls:
+                    zip_urls.append(url)
+        except Exception as err:  # noqa: BLE001 - fall back to explicit candidates.
+            failed.append({"url": str(page_url), "error": str(err)})
+
+    for direct_url in direct_urls:
+        try:
+            data = await _fetch_bytes(session, direct_url)
+            extension = Path(urlparse(direct_url).path).suffix.lower() or ".mp3"
+            rel_file = f"{AUDIO_DIRNAME}/{_safe_filename(base_name + extension, base_name + extension)}"
+            await hass.async_add_executor_job(_write_bytes, storage_dir / rel_file, data)
             return (
                 MediaItem(
-                    id=_make_id("song", "Portal 2", source_url, title),
+                    id=_make_id("song", game, direct_url, title),
                     kind="song",
-                    game="Portal 2",
+                    game=game,
                     quote=title,
                     title=title,
                     chapter="End credits",
                     section="",
-                    source_url=source_url,
-                    file=final_rel_file,
-                    audio=f"/local/{LOCAL_WEB_DIR}/{final_rel_file}",
+                    source_url=direct_url,
+                    file=rel_file,
+                    audio=f"/local/{LOCAL_WEB_DIR}/{rel_file}",
                 ),
                 1,
                 0,
                 failed,
             )
         except Exception as err:  # noqa: BLE001 - try the next source.
-            _LOGGER.warning("Failed downloading end song from %s: %s", zip_url, err)
+            _LOGGER.warning("Failed downloading completion song %s from %s: %s", title, direct_url, err)
+            failed.append({"url": direct_url, "error": str(err)})
+
+    for zip_url in zip_urls:
+        try:
+            archive_data = await _fetch_bytes(session, zip_url)
+            source_name, song_data = await hass.async_add_executor_job(_select_song_from_zip, archive_data, song)
+            extension = Path(source_name).suffix.lower() or ".mp3"
+            rel_file = f"{AUDIO_DIRNAME}/{_safe_filename(base_name + extension, base_name + extension)}"
+            await hass.async_add_executor_job(_write_bytes, storage_dir / rel_file, song_data)
+            source_url = f"{zip_url}#{source_name}"
+            return (
+                MediaItem(
+                    id=_make_id("song", game, source_url, title),
+                    kind="song",
+                    game=game,
+                    quote=title,
+                    title=title,
+                    chapter="End credits",
+                    section="",
+                    source_url=source_url,
+                    file=rel_file,
+                    audio=f"/local/{LOCAL_WEB_DIR}/{rel_file}",
+                ),
+                1,
+                0,
+                failed,
+            )
+        except Exception as err:  # noqa: BLE001 - try the next source.
+            _LOGGER.warning("Failed downloading completion song %s from %s: %s", title, zip_url, err)
             failed.append({"url": zip_url, "error": str(err)})
 
     return None, 0, 0, failed
@@ -403,7 +461,7 @@ async def download_all_voice_lines(
     failed: list[dict[str, str]] = [*page_failures]
 
     for i, entry in enumerate(source_entries, start=1):
-        game_slug = re.sub(r"[^a-z0-9]+", "_", entry["game"].lower()).strip("_")
+        game_slug = _slug(entry["game"])
         fallback = f"{game_slug}_glados_{i:04d}.wav"
         filename = f"{game_slug}_{_safe_filename_from_url(entry['source_url'], fallback)}"
         original = filename
@@ -447,15 +505,20 @@ async def download_all_voice_lines(
 
     await asyncio.gather(*(download_one(line) for line in lines))
 
-    end_song, song_downloaded, song_skipped, song_failed = await _download_end_song(
-        hass,
-        session,
-        storage_dir=storage_dir,
-        overwrite=overwrite,
-    )
-    downloaded += song_downloaded
-    skipped += song_skipped
-    failed.extend(song_failed)
+    completion_songs: dict[str, MediaItem] = {}
+    for song in COMPLETION_SONGS:
+        song_item, song_downloaded, song_skipped, song_failed = await _download_completion_song(
+            hass,
+            session,
+            storage_dir=storage_dir,
+            song=song,
+            overwrite=overwrite,
+        )
+        downloaded += song_downloaded
+        skipped += song_skipped
+        failed.extend(song_failed)
+        if song_item is not None:
+            completion_songs[song_item.game] = song_item
 
     available_lines = [line for line in lines if (storage_dir / line.file).exists()]
     payload: dict[str, Any] = {
@@ -469,11 +532,12 @@ async def download_all_voice_lines(
         "skipped": skipped,
         "failed": failed,
         "items": [asdict(line) for line in available_lines],
-        "end_song": asdict(end_song) if end_song else None,
+        "completion_songs": {game: asdict(song) for game, song in completion_songs.items()},
+        "end_song": asdict(completion_songs["Portal 2"]) if "Portal 2" in completion_songs else None,
     }
 
     await hass.async_add_executor_job(_write_json, index_path, payload)
-    await hass.async_add_executor_job(_write_text, quotes_path, _quotes_text(available_lines, end_song))
+    await hass.async_add_executor_job(_write_text, quotes_path, _quotes_text(available_lines, completion_songs))
 
     return payload
 
