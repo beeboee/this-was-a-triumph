@@ -4,12 +4,20 @@ class GladosVoiceCard extends HTMLElement {
     this.attachShadow({ mode: "open" });
     this._config = {};
     this._items = [];
+    this._lineItems = [];
+    this._endSong = null;
     this._current = null;
     this._loaded = false;
     this._loading = false;
     this._error = "";
     this._blocked = false;
     this._audio = null;
+    this._isPlaying = false;
+    this._isFinished = false;
+    this._heard = new Set();
+    this._completionSongQueued = false;
+    this._completionSongPlaying = false;
+    this._storageKey = "glados_voice_heard_v2";
   }
 
   setConfig(config) {
@@ -17,8 +25,11 @@ class GladosVoiceCard extends HTMLElement {
       index_url: "/local/glados_voice/index.json",
       autoplay: true,
       show_context: true,
+      show_progress: true,
+      progress_storage_key: "glados_voice_heard_v2",
       ...config,
     };
+    this._storageKey = this._config.progress_storage_key || "glados_voice_heard_v2";
     this._loadIndex();
   }
 
@@ -49,12 +60,16 @@ class GladosVoiceCard extends HTMLElement {
       if (!response.ok) throw new Error(`Index fetch failed: ${response.status}`);
       const data = await response.json();
       this._items = Array.isArray(data.items) ? data.items : [];
-      if (!this._items.length) throw new Error("No voice lines were found in the index.");
+      this._lineItems = this._items.filter((item) => (item.kind || "line") === "line");
+      this._endSong = data.end_song || this._items.find((item) => item.kind === "song") || null;
+      if (!this._lineItems.length) throw new Error("No voice lines were found in the index.");
+      this._loadProgress();
       this._loaded = true;
-      this._pickRandom(false);
       this._render();
       if (this._config.autoplay !== false) {
-        window.setTimeout(() => this._playCurrent(), 150);
+        window.setTimeout(() => this._pickRandom(true), 150);
+      } else {
+        this._pickRandom(false);
       }
     } catch (err) {
       this._error = err?.message || String(err);
@@ -64,20 +79,67 @@ class GladosVoiceCard extends HTMLElement {
     }
   }
 
-  _pickRandom(play = true) {
-    if (!this._items.length) return;
-    let next = this._items[Math.floor(Math.random() * this._items.length)];
-    if (this._items.length > 1 && this._current) {
-      let guard = 0;
-      while (next.id === this._current.id && guard < 10) {
-        next = this._items[Math.floor(Math.random() * this._items.length)];
-        guard += 1;
-      }
+  _loadProgress() {
+    const validIds = new Set(this._lineItems.map((item) => item.id));
+    try {
+      const raw = window.localStorage.getItem(this._storageKey);
+      const parsed = raw ? JSON.parse(raw) : {};
+      const ids = Array.isArray(parsed.ids) ? parsed.ids : [];
+      this._heard = new Set(ids.filter((id) => validIds.has(id)));
+    } catch (_) {
+      this._heard = new Set();
     }
+    this._saveProgress();
+  }
+
+  _saveProgress() {
+    try {
+      window.localStorage.setItem(
+        this._storageKey,
+        JSON.stringify({
+          ids: [...this._heard],
+          updated_at: new Date().toISOString(),
+        }),
+      );
+    } catch (_) {
+      // Storage can be blocked in some webviews; the card still works for the session.
+    }
+  }
+
+  _resetProgress() {
+    this._heard = new Set();
+    this._completionSongQueued = false;
+    this._completionSongPlaying = false;
+    this._saveProgress();
+  }
+
+  _markHeard(item) {
+    if (!item || (item.kind || "line") !== "line") return;
+    if (!this._heard.has(item.id)) {
+      this._heard.add(item.id);
+      this._saveProgress();
+    }
+    if (this._lineItems.length && this._heard.size >= this._lineItems.length) {
+      this._completionSongQueued = true;
+    }
+  }
+
+  _pickRandom(play = true) {
+    if (!this._lineItems.length) return;
+
+    // If the completion song was reached and the user manually shuffles away from it,
+    // count that cycle as done so they do not get trapped in completion-song limbo.
+    if (this._completionSongPlaying || this._current?.kind === "song") {
+      this._resetProgress();
+    }
+
+    const next = this._lineItems[Math.floor(Math.random() * this._lineItems.length)];
     this._current = next;
     this._blocked = false;
+    this._isFinished = false;
+    this._completionSongPlaying = false;
     this._render();
-    if (play) this._playCurrent();
+    if (play) this._playCurrent({ restart: true });
   }
 
   _stopAudio() {
@@ -90,33 +152,132 @@ class GladosVoiceCard extends HTMLElement {
     }
   }
 
-  async _playCurrent() {
-    if (!this._current?.audio) return;
+  _makeAudio(item) {
     this._stopAudio();
-    const src = this._current.audio;
-    this._audio = new Audio(src);
-    this._audio.preload = "auto";
-    this._audio.volume = Number.isFinite(Number(this._config.volume)) ? Number(this._config.volume) : 1;
+    const audio = new Audio(item.audio);
+    audio.preload = "auto";
+    audio.volume = Number.isFinite(Number(this._config.volume)) ? Number(this._config.volume) : 1;
+    audio._gladosItemId = item.id;
+    audio.addEventListener("ended", () => this._handleAudioEnded(item));
+    audio.addEventListener("pause", () => {
+      if (this._audio === audio && !audio.ended) {
+        this._isPlaying = false;
+        this._isFinished = false;
+        this._render();
+      }
+    });
+    this._audio = audio;
+    return audio;
+  }
+
+  async _playCurrent({ restart = true } = {}) {
+    if (!this._current?.audio) return;
+
+    let audio = this._audio;
+    if (!audio || audio._gladosItemId !== this._current.id) {
+      audio = this._makeAudio(this._current);
+    } else if (restart || audio.ended) {
+      audio.currentTime = 0;
+    }
+
     try {
-      await this._audio.play();
+      await audio.play();
       this._blocked = false;
+      this._isPlaying = true;
+      this._isFinished = false;
+      this._markHeard(this._current);
     } catch (_) {
       this._blocked = true;
+      this._isPlaying = false;
     }
     this._render();
   }
 
+  _toggleCurrent() {
+    if (!this._current?.audio) return;
+
+    const audioMatches = this._audio && this._audio._gladosItemId === this._current.id;
+    if (audioMatches && !this._audio.paused && !this._audio.ended) {
+      this._audio.pause();
+      this._isPlaying = false;
+      this._isFinished = false;
+      this._render();
+      return;
+    }
+
+    if (audioMatches && this._audio.paused && !this._audio.ended) {
+      this._playCurrent({ restart: false });
+      return;
+    }
+
+    this._playCurrent({ restart: true });
+  }
+
+  _handleAudioEnded(item) {
+    if (!this._audio || this._audio._gladosItemId !== item.id) return;
+
+    this._isPlaying = false;
+    this._isFinished = true;
+    this._render();
+
+    if ((item.kind || "line") === "line" && this._completionSongQueued) {
+      if (this._endSong?.audio) {
+        window.setTimeout(() => this._playEndSong(), 350);
+      } else {
+        this._resetProgress();
+        this._render();
+      }
+      return;
+    }
+
+    if (item.kind === "song") {
+      this._resetProgress();
+      this._isFinished = true;
+      this._render();
+    }
+  }
+
+  _playEndSong() {
+    if (!this._endSong?.audio) return;
+    this._completionSongQueued = false;
+    this._completionSongPlaying = true;
+    this._current = this._endSong;
+    this._blocked = false;
+    this._isFinished = false;
+    this._render();
+    this._playCurrent({ restart: true });
+  }
+
   _contextText() {
     if (!this._current || this._config.show_context === false) return "";
-    const bits = [this._current.chapter, this._current.section].filter(Boolean);
+    const bits = [this._current.game, this._current.chapter, this._current.section].filter(Boolean);
     return bits.join(" > ");
   }
 
+  _progressText() {
+    if (this._config.show_progress === false || !this._lineItems.length) return "";
+    return `${this._heard.size}/${this._lineItems.length} heard`;
+  }
+
+  _statusText() {
+    if (this._blocked) return "Browser blocked autoplay. Tap the transcript.";
+    if (this._isPlaying) return "Playing — tap transcript to pause.";
+    if (this._audio && this._audio._gladosItemId === this._current?.id && this._audio.paused && !this._audio.ended) {
+      return "Paused — tap transcript to resume.";
+    }
+    if (this._isFinished) return "Finished — tap transcript to replay.";
+    return "";
+  }
+
   _render() {
-    const quote = this._current?.quote || (this._loading ? "Loading GLaDOS voice lines…" : "No voice line selected.");
+    const quote = this._current?.quote || this._current?.title || (this._loading ? "Loading GLaDOS voice lines…" : "No voice line selected.");
     const context = this._contextText();
-    const blocked = this._blocked ? `<div class="hint">Browser blocked autoplay. Tap the quote.</div>` : "";
+    const progress = this._progressText();
+    const status = this._statusText();
     const error = this._error ? `<div class="error">${this._escape(this._error)}</div>` : "";
+    const metaBits = [progress, context].filter(Boolean);
+    const meta = metaBits.length ? `<div class="context">${this._escape(metaBits.join(" · "))}</div>` : "";
+    const statusLine = status ? `<div class="${this._blocked ? "hint" : "status"}">${this._escape(status)}</div>` : "";
 
     this.shadowRoot.innerHTML = `
       <style>
@@ -156,7 +317,7 @@ class GladosVoiceCard extends HTMLElement {
           white-space: normal;
           overflow-wrap: anywhere;
         }
-        .context, .hint, .error {
+        .context, .hint, .error, .status {
           margin-top: 3px;
           font-size: 0.72rem;
           opacity: 0.72;
@@ -169,14 +330,17 @@ class GladosVoiceCard extends HTMLElement {
           color: var(--warning-color, #f4b400);
           opacity: 1;
         }
+        .status {
+          opacity: 0.62;
+        }
       </style>
       <ha-card>
         <div class="wrap">
-          <button title="Shuffle GLaDOS line">🔀</button>
-          <div class="quote" title="Replay this voice line">
+          <button title="Shuffle random GLaDOS line">🔀</button>
+          <div class="quote" title="Tap to pause, resume, or replay this voice line">
             <div class="quoteText">${this._escape(quote)}</div>
-            ${context ? `<div class="context">${this._escape(context)}</div>` : ""}
-            ${blocked}
+            ${meta}
+            ${statusLine}
             ${error}
           </div>
         </div>
@@ -187,7 +351,7 @@ class GladosVoiceCard extends HTMLElement {
       event.stopPropagation();
       this._pickRandom(true);
     });
-    this.shadowRoot.querySelector(".quote")?.addEventListener("click", () => this._playCurrent());
+    this.shadowRoot.querySelector(".quote")?.addEventListener("click", () => this._toggleCurrent());
   }
 
   _escape(value) {
@@ -206,5 +370,5 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "glados-voice-card",
   name: "GLaDOS Voice Line",
-  description: "Random local Portal 2 GLaDOS quote player.",
+  description: "Random local Portal and Portal 2 GLaDOS quote player.",
 });
