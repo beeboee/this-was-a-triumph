@@ -121,6 +121,26 @@ progress_storage_key: glados_voice_heard_v3
 cache_bust: true
 ```
 
+## Supplying your own completion song files
+
+Do **not** commit copyrighted song/audio files to this repo. If the automatic completion-song download fails, you can provide your own local file on your Home Assistant box instead.
+
+For **Still Alive**, place your legally obtained audio file here:
+
+```text
+/config/www/glados_voice/audio/portal_completion_song_still_alive.mp3
+```
+
+For **Want You Gone**, place it here:
+
+```text
+/config/www/glados_voice/audio/portal_2_completion_song_want_you_gone.mp3
+```
+
+`.wav`, `.ogg`, and `.flac` should also work if you keep the same basename and change only the extension.
+
+Then run the download service with `overwrite: false`. The integration will see the existing local file, skip downloading it, and add it to the generated index.
+
 ## Service
 
 You can force a fresh download from **Developer Tools → Services**:
