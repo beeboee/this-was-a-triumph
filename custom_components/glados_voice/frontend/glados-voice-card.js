@@ -24,9 +24,11 @@ class GladosVoiceCard extends HTMLElement {
   setConfig(config) {
     this._config = {
       index_url: "/local/glados_voice/index.json",
+      progress_url: "/local/glados_voice/progress.json",
       autoplay: true,
       show_context: true,
       show_progress: true,
+      persist_progress: true,
       progress_storage_key: "glados_voice_heard_v3",
       ...config,
     };
@@ -68,7 +70,7 @@ class GladosVoiceCard extends HTMLElement {
       }
       if (!this._lineItems.length) throw new Error("No voice lines were found in the index.");
       this._buildLineGroups();
-      this._loadProgress();
+      await this._loadProgress();
       this._loaded = true;
       this._render();
       if (this._config.autoplay !== false) {
@@ -93,69 +95,108 @@ class GladosVoiceCard extends HTMLElement {
     }
   }
 
-  _loadProgress() {
+  _emptyProgress() {
+    const progress = {};
+    for (const game of this._linesByGame.keys()) {
+      progress[game] = new Set();
+    }
+    return progress;
+  }
+
+  _validIdsByGame() {
     const validByGame = {};
     for (const [game, lines] of this._linesByGame.entries()) {
       validByGame[game] = new Set(lines.map((item) => item.id));
     }
+    return validByGame;
+  }
 
-    const nextProgress = {};
-    for (const game of Object.keys(validByGame)) {
-      nextProgress[game] = new Set();
+  _mergeProgressPayload(target, payload) {
+    const validByGame = this._validIdsByGame();
+    const byGame = payload?.by_game && typeof payload.by_game === "object" ? payload.by_game : {};
+    for (const [game, ids] of Object.entries(byGame)) {
+      if (!validByGame[game] || !Array.isArray(ids)) continue;
+      if (!target[game]) target[game] = new Set();
+      for (const id of ids) {
+        if (validByGame[game].has(id)) target[game].add(id);
+      }
     }
+  }
 
+  _loadLocalProgressPayload() {
     try {
       const raw = window.localStorage.getItem(this._storageKey);
       const parsed = raw ? JSON.parse(raw) : {};
+      if (parsed.by_game && typeof parsed.by_game === "object") return parsed;
 
-      if (parsed.by_game && typeof parsed.by_game === "object") {
-        for (const [game, ids] of Object.entries(parsed.by_game)) {
-          if (!validByGame[game] || !Array.isArray(ids)) continue;
-          nextProgress[game] = new Set(ids.filter((id) => validByGame[game].has(id)));
-        }
-      } else if (Array.isArray(parsed.ids)) {
+      if (Array.isArray(parsed.ids)) {
         // Graceful migration from v2 combined progress.
+        const validByGame = this._validIdsByGame();
+        const byGame = {};
+        for (const game of Object.keys(validByGame)) byGame[game] = [];
         for (const id of parsed.ids) {
           for (const [game, validIds] of Object.entries(validByGame)) {
-            if (validIds.has(id)) nextProgress[game].add(id);
+            if (validIds.has(id)) byGame[game].push(id);
           }
         }
+        return { by_game: byGame };
       }
     } catch (_) {
       // Ignore corrupt/unavailable localStorage and start clean.
     }
+    return { by_game: {} };
+  }
 
+  async _loadServerProgressPayload() {
+    if (this._config.persist_progress === false || !this._config.progress_url) return { by_game: {} };
+    const cacheBust = this._config.cache_bust === false ? "" : `${this._config.progress_url.includes("?") ? "&" : "?"}_=${Date.now()}`;
+    try {
+      const response = await fetch(`${this._config.progress_url}${cacheBust}`, { cache: "no-store" });
+      if (!response.ok) return { by_game: {} };
+      return await response.json();
+    } catch (_) {
+      return { by_game: {} };
+    }
+  }
+
+  async _loadProgress() {
+    const nextProgress = this._emptyProgress();
+    this._mergeProgressPayload(nextProgress, this._loadLocalProgressPayload());
+    this._mergeProgressPayload(nextProgress, await this._loadServerProgressPayload());
     this._heardByGame = nextProgress;
     this._saveProgress();
   }
 
+  _progressPayload() {
+    const byGame = {};
+    for (const [game, ids] of Object.entries(this._heardByGame)) {
+      byGame[game] = [...ids];
+    }
+    return {
+      by_game: byGame,
+      updated_at: new Date().toISOString(),
+    };
+  }
+
   _saveProgress() {
+    const payload = this._progressPayload();
     try {
-      const byGame = {};
-      for (const [game, ids] of Object.entries(this._heardByGame)) {
-        byGame[game] = [...ids];
-      }
-      window.localStorage.setItem(
-        this._storageKey,
-        JSON.stringify({
-          by_game: byGame,
-          updated_at: new Date().toISOString(),
-        }),
-      );
+      window.localStorage.setItem(this._storageKey, JSON.stringify(payload));
     } catch (_) {
       // Storage can be blocked in some webviews; the card still works for the session.
     }
+
+    if (this._config.persist_progress === false || !this._hass?.callService) return;
+    this._hass.callService("glados_voice", "save_progress", { by_game: payload.by_game }).catch(() => {
+      // Server-side persistence is best effort; localStorage remains as a fallback.
+    });
   }
 
   _resetProgress(game = null) {
     if (game) {
       this._heardByGame[game] = new Set();
     } else {
-      const reset = {};
-      for (const gameName of this._linesByGame.keys()) {
-        reset[gameName] = new Set();
-      }
-      this._heardByGame = reset;
+      this._heardByGame = this._emptyProgress();
     }
     this._queuedCompletionGame = null;
     this._completionSongPlaying = false;
@@ -355,28 +396,37 @@ class GladosVoiceCard extends HTMLElement {
         }
         .wrap {
           display: grid;
-          grid-template-columns: minmax(0, 6fr) minmax(44px, 1fr);
+          grid-template-columns: minmax(0, 1fr) 44px;
           align-items: stretch;
           min-height: 56px;
         }
         button {
           border: 0;
-          border-left: 1px solid var(--divider-color, rgba(255,255,255,.12));
-          background: color-mix(in srgb, var(--card-background-color) 88%, var(--primary-color));
-          color: var(--primary-text-color);
-          font: inherit;
-          font-size: 22px;
+          background: transparent;
+          color: var(--secondary-text-color, var(--primary-text-color));
           cursor: pointer;
           min-width: 44px;
+          padding: 0 10px 0 6px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          opacity: 0.72;
+          -webkit-tap-highlight-color: transparent;
         }
         button:hover {
-          background: color-mix(in srgb, var(--card-background-color) 74%, var(--primary-color));
+          color: var(--primary-text-color);
+          opacity: 1;
+          background: color-mix(in srgb, var(--card-background-color) 92%, var(--primary-color));
+        }
+        ha-icon {
+          --mdc-icon-size: 22px;
         }
         .quote {
-          padding: 10px 12px;
+          padding: 10px 8px 10px 12px;
           cursor: pointer;
           user-select: none;
           line-height: 1.25;
+          min-width: 0;
         }
         .quoteText {
           font-size: 0.96rem;
@@ -408,7 +458,9 @@ class GladosVoiceCard extends HTMLElement {
             ${statusLine}
             ${error}
           </div>
-          <button title="Shuffle random GLaDOS line">🔀</button>
+          <button title="Shuffle random GLaDOS line" aria-label="Shuffle random GLaDOS line">
+            <ha-icon icon="mdi:shuffle"></ha-icon>
+          </button>
         </div>
       </ha-card>
     `;
