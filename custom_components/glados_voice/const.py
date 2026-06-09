@@ -48,9 +48,12 @@ USER_AGENT = "HomeAssistant-GLaDOS-Voice-Lines/0.3 (+https://www.home-assistant.
 
 SERVICE_DOWNLOAD = "download"
 SERVICE_REBUILD_INDEX = "rebuild_index"
+SERVICE_SAVE_PROGRESS = "save_progress"
+SERVICE_RESET_PROGRESS = "reset_progress"
 
 WEB_PATH_CARD = "/glados_voice/card.js"
 LOCAL_WEB_DIR = "glados_voice"
 INDEX_FILENAME = "index.json"
+PROGRESS_FILENAME = "progress.json"
 QUOTES_FILENAME = "quotes.txt"
 AUDIO_DIRNAME = "audio"
