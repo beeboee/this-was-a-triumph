@@ -355,13 +355,13 @@ class GladosVoiceCard extends HTMLElement {
         }
         .wrap {
           display: grid;
-          grid-template-columns: minmax(44px, 1fr) minmax(0, 6fr);
+          grid-template-columns: minmax(0, 6fr) minmax(44px, 1fr);
           align-items: stretch;
           min-height: 56px;
         }
         button {
           border: 0;
-          border-right: 1px solid var(--divider-color, rgba(255,255,255,.12));
+          border-left: 1px solid var(--divider-color, rgba(255,255,255,.12));
           background: color-mix(in srgb, var(--card-background-color) 88%, var(--primary-color));
           color: var(--primary-text-color);
           font: inherit;
@@ -402,13 +402,13 @@ class GladosVoiceCard extends HTMLElement {
       </style>
       <ha-card>
         <div class="wrap">
-          <button title="Shuffle random GLaDOS line">🔀</button>
           <div class="quote" title="Tap to pause, resume, or replay this voice line">
             <div class="quoteText">${this._escape(quote)}</div>
             ${meta}
             ${statusLine}
             ${error}
           </div>
+          <button title="Shuffle random GLaDOS line">🔀</button>
         </div>
       </ha-card>
     `;
