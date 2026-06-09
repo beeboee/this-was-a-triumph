@@ -352,7 +352,7 @@ class GladosVoiceCard extends HTMLElement {
 
   _contextText() {
     if (!this._current || this._config.show_context === false) return "";
-    const bits = [this._current.game, this._current.chapter, this._current.section].filter(Boolean);
+    const bits = [this._current.game, this._current.chapter].filter(Boolean);
     return bits.join(" > ");
   }
 
@@ -366,25 +366,25 @@ class GladosVoiceCard extends HTMLElement {
     return bits.join(" · ");
   }
 
-  _statusText() {
-    if (this._blocked) return "Browser blocked autoplay. Tap the transcript.";
-    if (this._isPlaying) return "Playing — tap transcript to pause.";
-    if (this._audio && this._audio._gladosItemId === this._current?.id && this._audio.paused && !this._audio.ended) {
-      return "Paused — tap transcript to resume.";
-    }
-    if (this._isFinished) return "Finished — tap transcript to replay.";
-    return "";
+  _playbackIcon() {
+    if (this._isFinished) return "mdi:replay";
+    if (this._isPlaying) return "mdi:pause";
+    return "mdi:play";
+  }
+
+  _playbackLabel() {
+    if (this._isFinished) return "Replay voice line";
+    if (this._isPlaying) return "Pause voice line";
+    return "Play voice line";
   }
 
   _render() {
     const quote = this._current?.quote || this._current?.title || (this._loading ? "Loading GLaDOS voice lines…" : "No voice line selected.");
     const context = this._contextText();
     const progress = this._progressText();
-    const status = this._statusText();
     const error = this._error ? `<div class="error">${this._escape(this._error)}</div>` : "";
-    const metaBits = [progress, context].filter(Boolean);
-    const meta = metaBits.length ? `<div class="context">${this._escape(metaBits.join(" · "))}</div>` : "";
-    const statusLine = status ? `<div class="${this._blocked ? "hint" : "status"}">${this._escape(status)}</div>` : "";
+    const leftMeta = [progress, context].filter(Boolean).join(" · ");
+    const hintClass = this._blocked ? " playbackIcon blocked" : "playbackIcon";
 
     this.shadowRoot.innerHTML = `
       <style>
@@ -433,29 +433,52 @@ class GladosVoiceCard extends HTMLElement {
           white-space: normal;
           overflow-wrap: anywhere;
         }
-        .context, .hint, .error, .status {
+        .metaRow {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto;
+          align-items: center;
+          gap: 8px;
           margin-top: 3px;
+          min-height: 18px;
+        }
+        .metaText, .error {
           font-size: 0.72rem;
+        }
+        .metaText {
           opacity: 0.72;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
         }
-        .error {
-          color: var(--error-color, #db4437);
-          opacity: 1;
+        .playbackIcon {
+          opacity: 0.72;
+          color: var(--secondary-text-color, var(--primary-text-color));
+          display: inline-flex;
+          align-items: center;
         }
-        .hint {
+        .playbackIcon ha-icon {
+          --mdc-icon-size: 16px;
+        }
+        .playbackIcon.blocked {
           color: var(--warning-color, #f4b400);
           opacity: 1;
         }
-        .status {
-          opacity: 0.62;
+        .error {
+          margin-top: 3px;
+          color: var(--error-color, #db4437);
+          opacity: 1;
         }
       </style>
       <ha-card>
         <div class="wrap">
-          <div class="quote" title="Tap to pause, resume, or replay this voice line">
+          <div class="quote" title="${this._escape(this._playbackLabel())}">
             <div class="quoteText">${this._escape(quote)}</div>
-            ${meta}
-            ${statusLine}
+            <div class="metaRow">
+              <div class="metaText">${this._escape(leftMeta)}</div>
+              <span class="${hintClass}" aria-label="${this._escape(this._playbackLabel())}">
+                <ha-icon icon="${this._playbackIcon()}"></ha-icon>
+              </span>
+            </div>
             ${error}
           </div>
           <button title="Shuffle random GLaDOS line" aria-label="Shuffle random GLaDOS line">
