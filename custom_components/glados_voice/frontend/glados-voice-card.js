@@ -368,14 +368,14 @@ class GladosVoiceCard extends HTMLElement {
 
   _playbackIcon() {
     if (this._isFinished) return "mdi:replay";
-    if (this._isPlaying) return "mdi:pause";
-    return "mdi:play";
+    if (this._isPlaying) return "mdi:play";
+    return "mdi:pause";
   }
 
   _playbackLabel() {
-    if (this._isFinished) return "Replay voice line";
-    if (this._isPlaying) return "Pause voice line";
-    return "Play voice line";
+    if (this._isFinished) return "Finished";
+    if (this._isPlaying) return "Playing";
+    return "Paused";
   }
 
   _render() {
