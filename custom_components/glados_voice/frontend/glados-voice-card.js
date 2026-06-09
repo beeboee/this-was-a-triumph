@@ -433,31 +433,24 @@ class GladosVoiceCard extends HTMLElement {
           white-space: normal;
           overflow-wrap: anywhere;
         }
-        .metaRow {
-          display: grid;
-          grid-template-columns: minmax(0, 1fr) auto;
-          align-items: center;
-          gap: 8px;
+        .metaLine {
           margin-top: 3px;
           min-height: 18px;
-        }
-        .metaText, .error {
           font-size: 0.72rem;
-        }
-        .metaText {
           opacity: 0.72;
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
         }
         .playbackIcon {
-          opacity: 0.72;
-          color: var(--secondary-text-color, var(--primary-text-color));
           display: inline-flex;
           align-items: center;
+          vertical-align: text-bottom;
+          margin-left: 4px;
+          color: var(--secondary-text-color, var(--primary-text-color));
         }
         .playbackIcon ha-icon {
-          --mdc-icon-size: 16px;
+          --mdc-icon-size: 14px;
         }
         .playbackIcon.blocked {
           color: var(--warning-color, #f4b400);
@@ -465,6 +458,7 @@ class GladosVoiceCard extends HTMLElement {
         }
         .error {
           margin-top: 3px;
+          font-size: 0.72rem;
           color: var(--error-color, #db4437);
           opacity: 1;
         }
@@ -473,8 +467,8 @@ class GladosVoiceCard extends HTMLElement {
         <div class="wrap">
           <div class="quote" title="${this._escape(this._playbackLabel())}">
             <div class="quoteText">${this._escape(quote)}</div>
-            <div class="metaRow">
-              <div class="metaText">${this._escape(leftMeta)}</div>
+            <div class="metaLine">
+              ${this._escape(leftMeta)}
               <span class="${hintClass}" aria-label="${this._escape(this._playbackLabel())}">
                 <ha-icon icon="${this._playbackIcon()}"></ha-icon>
               </span>
