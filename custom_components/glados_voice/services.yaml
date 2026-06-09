@@ -1,6 +1,6 @@
 download:
   name: Download voice lines
-  description: Download Portal and Portal 2 GLaDOS voice lines, plus the Portal 2 ending song when available, and rebuild the local quote index.
+  description: Download Portal and Portal 2 GLaDOS voice lines, plus completion songs when available, and rebuild the local quote index.
   fields:
     overwrite:
       name: Overwrite existing audio files
@@ -23,3 +23,18 @@ download:
 rebuild_index:
   name: Rebuild index
   description: Reload the existing generated index. This is mostly a sanity-check service.
+
+save_progress:
+  name: Save playback progress
+  description: Save the card's heard-line progress to /config/www/glados_voice/progress.json.
+  fields:
+    by_game:
+      name: Progress by game
+      description: Map of game names to heard voice-line ids.
+      required: true
+      selector:
+        object:
+
+reset_progress:
+  name: Reset playback progress
+  description: Clear persisted heard-line progress.
